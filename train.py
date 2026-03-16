@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 from torch.utils.tensorboard import SummaryWriter
 import os
 import time
+import json
 from config import *
 from models import SimpleCNN, UNet
 from dataset import create_data_loaders
@@ -34,12 +35,13 @@ class EarlyStopping:
             self.counter = 0
 
 class Trainer:
-    def __init__(self, model, train_loader, val_loader, device,learning_rate=1e-3, weight_decay=1e-5):
+    def __init__(self, model, train_loader, val_loader, device,learning_rate=1e-3, weight_decay=1e-5,fold_suffix=""):
         self.model = model.to(device)
         self.train_loader = train_loader
         self.val_loader = val_loader
         self.device = device
 
+        self.fold_suffix = fold_suffix  # 新增
         # 损失函数和优化器
         self.criterion = nn.MSELoss()
 
@@ -60,9 +62,12 @@ class Trainer:
         self.train_losses = []
         self.val_losses = []
         self.best_val_loss = float('inf')
+        self.best_metric = float('inf')
 
         # TensorBoard
-        self.writer = SummaryWriter(os.path.join(MODEL_SAVE_PATH, 'logs'))
+        log_dir = os.path.join(MODEL_SAVE_PATH, f'logs{fold_suffix}')
+        self.writer = SummaryWriter(log_dir)
+        # self.writer = SummaryWriter(os.path.join(MODEL_SAVE_PATH, 'logs'))
 
     def train_epoch(self):
         """训练一个epoch"""
@@ -70,8 +75,10 @@ class Trainer:
         total_loss = 0
 
         for batch_X, batch_y in self.train_loader:
+            # print("原始 batch_X 形状:", batch_X.shape)
             batch_X = batch_X.to(self.device)
             batch_y = batch_y.to(self.device)
+
 
             self.optimizer.zero_grad()
 
@@ -148,6 +155,7 @@ class Trainer:
             # 保存最佳模型
             if val_loss < self.best_val_loss:
                 self.best_val_loss = val_loss
+                self.best_metric = val_loss
                 self.save_model('best_model.pth')
 
             early_stop_triggered = False
@@ -173,17 +181,25 @@ class Trainer:
         self.save_model('final_model.pth')
 
         # 绘制损失曲线
-        self.plot_losses()
-
+        # self.plot_losses()
+        fold_data = self.plot_losses()
         print("\n训练完成!")
         print(f"最佳验证损失: {self.best_val_loss:.6f}")
         print(f"总训练时间: {time.time() - start_time:.1f}s")
 
         self.writer.close()
+        return fold_data
 
     def save_model(self, filename):
         """保存模型"""
-        model_path = os.path.join(MODEL_SAVE_PATH, filename)
+        if self.fold_suffix:
+            # 去掉 .pth 后缀，插入 fold_suffix，再加回 .pth
+            name, ext = os.path.splitext(filename)
+            final_filename = f"{name}{self.fold_suffix}{ext}"
+        else:
+            final_filename = filename
+        # model_path = os.path.join(MODEL_SAVE_PATH, filename)
+        model_path = os.path.join(MODEL_SAVE_PATH, final_filename)
         torch.save({
             'model_state_dict': self.model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
@@ -204,24 +220,57 @@ class Trainer:
         self.best_val_loss = checkpoint['best_val_loss']
         print(f"模型已加载: {model_path}")
 
+    def save_loss_data(self):
+        """将当前 Fold 的 loss 数据追加保存到公共 JSON 文件中"""
+        json_path = os.path.join(FIGURE_SAVE_PATH, 'all_folds_losses.json')
+
+        # 准备当前折的数据
+        current_fold_data = {
+            'fold_suffix': self.fold_suffix if self.fold_suffix else 'default',
+            'train_losses': self.train_losses,
+            'val_losses': self.val_losses,
+            'best_val_loss': self.best_val_loss
+        }
+
+        all_data = []
+
+        # 如果文件存在，读取已有数据
+        if os.path.exists(json_path):
+            try:
+                with open(json_path, 'r', encoding='utf-8') as f:
+                    all_data = json.load(f)
+            except:
+                all_data = []
+
+        # 追加当前数据
+        all_data.append(current_fold_data)
+
+        # 写回文件
+        with open(json_path, 'w', encoding='utf-8') as f:
+            json.dump(all_data, f, indent=4)
+
+        print(f"损失数据已追加保存至: {json_path}")
+
+
     def plot_losses(self):
         """绘制损失曲线"""
-        plt.figure(figsize=(10, 6))
-        plt.plot(self.train_losses, label='Train Loss', alpha=0.8)
-        plt.plot(self.val_losses, label='Validation Loss', alpha=0.8)
-        plt.xlabel('Epoch')
-        plt.ylabel('MSE Loss')
-        plt.title(f'{self.model.__class__.__name__} Training History')
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-        plt.savefig(os.path.join(FIGURE_SAVE_PATH, 'training_history.png'), dpi=150, bbox_inches='tight')
-        plt.show()
-
+        # plt.figure(figsize=(10, 6))
+        # plt.plot(self.train_losses, label='Train Loss', alpha=0.8)
+        # plt.plot(self.val_losses, label='Validation Loss', alpha=0.8)
+        # plt.xlabel('Epoch')
+        # plt.ylabel('MSE Loss')
+        # plt.title(f'{self.model.__class__.__name__} Training History')
+        # plt.legend()
+        # plt.grid(True, alpha=0.3)
+        # plt.savefig(os.path.join(FIGURE_SAVE_PATH, 'training_history.png'), dpi=150, bbox_inches='tight')
+        # plt.show()
+        pass
 
 def main():
     """主训练函数"""
     # 加载数据
     print("加载数据...")
+
     preparer = WeatherDataPreparer()
     X_train, X_val, X_test, y_train, y_val, y_test = preparer.load_processed_data()
 

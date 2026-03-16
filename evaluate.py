@@ -9,7 +9,7 @@ import cartopy.feature as cfeature
 from sklearn.metrics import mean_squared_error, mean_absolute_error
 import os
 from config import *
-from models import SimpleCNN, UNet
+from models import SimpleCNN, UNet, FNN, MLP, ConvLSTM,SwinTransformerModel
 from dataset import create_data_loaders
 from data_prepare import WeatherDataPreparer
 import pickle
@@ -25,6 +25,19 @@ class Evaluator:
         """评估模型性能"""
         self.model.eval()
 
+        # === 诊断代码 ===
+        print("\n" + "=" * 50)
+        print("维度诊断")
+        print("=" * 50)
+        batch_X, batch_y = next(iter(self.test_loader))
+        print(f"batch_X shape: {batch_X.shape}")
+        print(f"batch_y shape: {batch_y.shape}")
+
+        with torch.no_grad():
+            output = self.model(batch_X.to(self.device))
+            print(f"模型输出 shape: {output.shape}")
+        print("=" * 50 + "\n")
+        # ================
         all_predictions = []
         all_targets = []
 
@@ -226,7 +239,15 @@ def main():
     # 加载模型
     print("\n加载模型...")
     model = UNet()  # 或 SimpleCNN()
-
+    print("使用UNet模型")
+    # model = FNN()
+    # print("使用FNN模型")
+    # model = MLP()
+    # print("使用MLP模型")
+    # model = ConvLSTM()
+    # print("使用ConvLSTM模型")
+    # model = SwinTransformerModel()
+    # print("使用SwinTransformer模型")
     # 加载训练好的权重
     model_path = os.path.join(MODEL_SAVE_PATH, 'best_model.pth')
     if os.path.exists(model_path):
