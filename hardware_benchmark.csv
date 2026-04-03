@@ -1,0 +1,5 @@
+Model,RMSE,MAE,R2,Time(ms),Params(M),GPU_Memory(MB),Throughput,SpeedUp,Mem_Saved(%)
+Model4 (Shared),1.115,0.849,-0.5111,62.32,0.127,21.38,64.18,1.0,0.0
+Model4 (Shared) (FP16),0.958,0.6965,-0.1155,68.0,0.127,14.88,58.82,1.09,30.4
+Model5 (Independent),0.9057,0.6505,0.003,58.13,0.127,21.39,68.82,1.0,0.0
+Model5 (Independent) (FP16),1.1109,0.7993,-0.4999,55.12,0.127,14.89,72.56,0.95,30.4
