@@ -86,93 +86,6 @@ class TemporalMixerBlock(nn.Module):
         h = h * g
         logits = self.out_proj(h).squeeze(-1)  # (B, T)
         return logits
-
-class QuantizationEvaluator:
-    def __init__(self, model, device="cpu"):
-        self.model = model.to(device)
-        self.device = device
-        self.model.eval()
-
-    def export_onnx(self, dummy_input, onnx_path):
-        """1. 导出原始 FP32 ONNX 模型"""
-        torch.onnx.export(
-            self.model, dummy_input, onnx_path,
-            export_params=True, opset_version=13,
-            do_constant_folding=True,
-            input_names=['input'], output_names=['output'],
-            dynamic_axes={'input': {0: 'batch_size', 1: 'time_steps'}, 'output': {0: 'batch_size'}}
-        )
-        print(f"✅ 原始模型已导出: {onnx_path}")
-
-    def quantize_onnx(self, onnx_path, quantized_path):
-        """2. 执行 INT8 量化 (使用 onnxruntime 的简单量化)"""
-        try:
-            from onnxruntime.quantization import quantize_dynamic, QuantType
-            quantize_dynamic(onnx_path, quantized_path, weight_type=QuantType.QUInt8)
-            print(f"✅ 模型已量化: {quantized_path}")
-        except ImportError:
-            print("⚠️ 未安装 onnxruntime-quantization，跳过量化步骤")
-            return None
-        return quantized_path
-
-    def check_numerical_consistency(self, dummy_input, onnx_path, quantized_path):
-        """3. 对比输出数值差异"""
-        # 获取原始 PyTorch 输出
-        with torch.no_grad():
-            raw_output = self.model(dummy_input).numpy().flatten()
-            if isinstance(raw_output, dict):
-                raw_output = list(raw_output.values())[0]
-            torch_output = raw_output.numpy().flatten()
-
-        # 获取 ONNX (FP32) 输出
-        sess_fp32 = ort.InferenceSession(onnx_path, providers=['CPUExecutionProvider'])
-        onnx_output = sess_fp32.run(None, {'input': dummy_input.numpy()})[0].flatten() 
-
-        # 获取 Quantized (INT8) 输出
-        if quantized_path:
-            sess_int8 = ort.InferenceSession(quantized_path, providers=['CPUExecutionProvider'])
-            int8_output = sess_int8.run(None, {'input': dummy_input.numpy()})[0].flatten()
-        else:
-            int8_output = None
-
-        # 计算余弦相似度
-        def cosine_similarity(a, b):
-            return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
-
-        sim_fp32 = cosine_similarity(torch_output, onnx_output)
-        sim_int8 = cosine_similarity(torch_output, int8_output) if int8_output is not None else 0.0
-        
-        # 计算最大绝对误差
-        max_err_int8 = np.max(np.abs(torch_output - int8_output)) if int8_output is not None else 0.0
-
-        print(f"🔍 数值一致性检查:")
-        print(f"   PyTorch vs ONNX(FP32) 相似度: {sim_fp32:.6f}")
-        print(f"   PyTorch vs ONNX(INT8) 相似度: {sim_int8:.6f}")
-        print(f"   INT8 最大绝对误差: {max_err_int8:.6f}")
-        
-        return sim_int8, max_err_int8
-
-    def benchmark_speed(self, dummy_input, onnx_path, quantized_path, iterations=100):
-        """4. 测速"""
-        def measure_time(session, input_data):
-            # 预热
-            for _ in range(10): session.run(None, {'input': input_data.numpy()})
-            
-            start = time.time()
-            for _ in range(iterations): session.run(None, {'input': input_data.numpy()})
-            end = time.time()
-            
-            return (end - start) / iterations * 1000 # 毫秒
-
-        sess_fp32 = ort.InferenceSession(onnx_path, providers=['CPUExecutionProvider'])
-        latency_fp32 = measure_time(sess_fp32, dummy_input)
-
-        latency_int8 = 0
-        if quantized_path:
-            sess_int8 = ort.InferenceSession(quantized_path, providers=['CPUExecutionProvider'])
-            latency_int8 = measure_time(sess_int8, dummy_input)
-
-        return latency_fp32, latency_int8
 def load_processed_data():
     print("\n" + "=" * 100)
     print("Loading processed data")
@@ -241,7 +154,7 @@ def collect_predictions(model, loader):
 
 def build_model_family(input_channels, target_channels):
     return {
-        "UNet": UNet(input_channels=input_channels, output_channels=target_channels).to(DEVICE),
+        # "UNet": UNet(input_channels=input_channels, output_channels=target_channels).to(DEVICE),
         # "SharedWeightUNet": MinimalTimeAwareUNet(
         #     input_channels=input_channels, output_channels=target_channels
         # ).to(DEVICE),
@@ -456,6 +369,11 @@ def run_benchmark(num_epochs=120, batch_size=BATCH_SIZE, lr=1e-4, seed=42):
         trained_model, best_val_rmse, best_epoch, params = train_one_model(
             model, model_name, train_loader, val_loader, num_epochs=num_epochs, lr=lr
         )
+        os.makedirs("./saved_models", exist_ok=True)
+        # 建议加上时间戳或者直接用 model_name，避免覆盖
+        save_path = f"./saved_models/{model_name}_final.pth"
+        torch.save(trained_model.state_dict(), save_path)
+        print(f"✅ 模型权重已保存: {save_path}")
         val_preds, val_targets = collect_predictions(trained_model, val_loader)
         test_preds, test_targets = collect_predictions(trained_model, test_loader)
 
@@ -509,56 +427,6 @@ def run_benchmark(num_epochs=120, batch_size=BATCH_SIZE, lr=1e-4, seed=42):
     save_metric_plots(results, os.path.join(RESULTS_DIR, f"advanced_plots_{timestamp}"))
 
     best = min(results, key=lambda x: x["test_metrics"]["rmse"])
-     # ================= 新增：部署优化评估 =================
-    print("\n" + "=" * 50)
-    print("🚀 开始部署优化评估 (ONNX + INT8)")
-    print("=" * 50)
-    
-    # 1. 准备评估器
-    best_model_name = best["model_name"]
-    # 注意：这里需要重新实例化最佳模型并加载权重，或者直接从 results 中取（如果保存了）
-    # 假设我们有一个函数 load_model_by_name
-    model_for_quant = models[best_model_name] 
-    # 确保加载了训练好的权重
-    # model_for_quant.load_state_dict(...) 
-    
-    evaluator = QuantizationEvaluator(model_for_quant, device="cpu")
-    
-    # 2. 准备 dummy input (模拟 batch_size=1, T=7)
-    dummy_input = torch.randn(1, 7, 80, 102, arrays["input_channels"])
-    
-    # 3. 定义路径
-    opt_dir = os.path.join(RESULTS_DIR, "deployment")
-    os.makedirs(opt_dir, exist_ok=True)
-    fp32_path = os.path.join(opt_dir, f"{best_model_name}_fp32.onnx")
-    int8_path = os.path.join(opt_dir, f"{best_model_name}_int8.onnx")
-    
-    # 4. 执行流程
-    evaluator.export_onnx(dummy_input, fp32_path)
-    quantized_path = evaluator.quantize_onnx(fp32_path, int8_path)
-    
-    # 5. 获取指标
-    sim_int8, max_err = evaluator.check_numerical_consistency(dummy_input, fp32_path, quantized_path)
-    lat_fp32, lat_int8 = evaluator.benchmark_speed(dummy_input, fp32_path, quantized_path)
-    
-    # 获取文件大小
-    size_fp32 = os.path.getsize(fp32_path) / (1024 * 1024)
-    size_int8 = os.path.getsize(quantized_path) / (1024 * 1024) if quantized_path else 0
-    
-    # 6. 打印对比报告
-    t = PrettyTable(["指标", "原始 (FP32)", "量化 (INT8)", "优化效果"])
-    t.add_row(["文件大小 (MB)", f"{size_fp32:.2f}", f"{size_int8:.2f}", f"📉 {100*(1-size_int8/size_fp32):.1f}%"])
-    t.add_row(["推理延迟 (ms)", f"{lat_fp32:.2f}", f"{lat_int8:.2f}", f"🚀 {100*(lat_fp32-lat_int8)/lat_fp32:.1f}%"])
-    t.add_row(["数值相似度", "1.000000", f"{sim_int8:.6f}", "✅ 高保真" if sim_int8 > 0.99 else "⚠️ 需校准"])
-    print(t)
-    
-    # 7. 保存可视化
-    # 构造绘图数据
-    deploy_results = [
-        {"name": "FP32", "size_mb": size_fp32, "latency_ms": lat_fp32, "acc_ratio": 1.0},
-        {"name": "INT8", "size_mb": size_int8, "latency_ms": lat_int8, "acc_ratio": sim_int8} # 这里用相似度近似精度保持
-    ]
-    plot_optimization_results(deploy_results, opt_dir)
     # =======================================================
     print("\n" + "=" * 120)
     print("Conclusion")
